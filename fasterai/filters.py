@@ -1,6 +1,6 @@
 from numpy import ndarray
 from abc import ABC, abstractmethod
-from .generators import Unet34, Unet101, Unet152, GeneratorModule
+from .generators import Unet34, Unet101, Unet152, GeneratorModule, Unet34_V2, Unet101_V2
 from .transforms import BlackAndWhiteTransform
 from fastai.torch_imports import *
 from fastai.core import *
@@ -123,6 +123,12 @@ class Colorizer34(AbstractColorizer):
     def _get_model(self, nf_factor:int, gpu:int)->GeneratorModule:
         return Unet34(nf_factor=nf_factor).cuda(gpu)
 
+class Colorizer34_V2(AbstractColorizer):
+    def __init__(self, gpu:int, weights_path:Path, nf_factor:int=2, map_to_orig:bool=True):
+        super().__init__(gpu=gpu, weights_path=weights_path, nf_factor=nf_factor, map_to_orig=map_to_orig)
+
+    def _get_model(self, nf_factor:int, gpu:int)->GeneratorModule:
+        return Unet34_V2(nf_factor=nf_factor).cuda(gpu)
 
 class Colorizer101(AbstractColorizer):
     def __init__(self, gpu:int, weights_path:Path, nf_factor:int=2, map_to_orig:bool=True):
@@ -131,6 +137,13 @@ class Colorizer101(AbstractColorizer):
     def _get_model(self, nf_factor:int, gpu:int)->GeneratorModule:
         return Unet101(nf_factor=nf_factor).cuda(gpu)
 
+
+class Colorizer101_V2(AbstractColorizer):
+    def __init__(self, gpu:int, weights_path:Path, nf_factor:int=2, map_to_orig:bool=True):
+        super().__init__(gpu=gpu, weights_path=weights_path, nf_factor=nf_factor, map_to_orig=map_to_orig)
+
+    def _get_model(self, nf_factor:int, gpu:int)->GeneratorModule:
+        return Unet101_V2(nf_factor=nf_factor).cuda(gpu)
 
 class Colorizer152(AbstractColorizer):
     def __init__(self, gpu:int, weights_path:Path, nf_factor:int=2, map_to_orig:bool=True):
@@ -157,3 +170,52 @@ class DeFader(Filter):
 
     def _post_process(self, result:ndarray, orig:ndarray):
         return self._unsquare(result, orig)
+
+
+#TODO:  May not want to do square rendering here like in colorization- it definitely loses 
+#fidelity visibly (but not too terribly).  Will revisit.
+class SuperRes34(Filter): 
+    def __init__(self, gpu:int, weights_path:Path, nf_factor:int=2, scale:int=2):
+        super().__init__(tfms=[])
+        self.model = Unet34_B(nf_factor=nf_factor, scale=scale).cuda(gpu)
+        self._init_model(self.model, weights_path)
+        self.render_base=16
+        self.gpu = gpu
+        self.scale=scale
+
+    #render_factor is ignored for now
+    def filter(self, orig_image:ndarray, filtered_image:ndarray, render_factor:int=0)->ndarray:
+        render_sz = math.ceil(max(orig_image.shape[1], orig_image.shape[0])/32)*32
+        model_image = self._model_process(self.model, orig=filtered_image, sz=render_sz, gpu=self.gpu)
+        return self._post_process(model_image, filtered_image)
+
+    def _post_process(self, result:ndarray, orig:ndarray):
+        return self._unsquare(result, orig)
+
+    def _unsquare(self, result:ndarray, orig:ndarray):
+        sz = (orig.shape[1]*self.scale, orig.shape[0]*self.scale)
+        return cv2.resize(result, sz, interpolation=cv2.INTER_AREA)  
+
+#TODO:  May not want to do square rendering here like in colorization- it definitely loses 
+#fidelity visibly (but not too terribly).  Will revisit.
+class SuperRes101(Filter): 
+    def __init__(self, gpu:int, weights_path:Path, nf_factor:int=2, scale:int=2):
+        super().__init__(tfms=[])
+        self.model = Unet101(nf_factor=nf_factor, scale=scale).cuda(gpu)
+        self._init_model(self.model, weights_path)
+        self.render_base=16
+        self.gpu = gpu
+        self.scale=scale
+
+    #render_factor is ignored for now
+    def filter(self, orig_image:ndarray, filtered_image:ndarray, render_factor:int=0)->ndarray:
+        render_sz = math.ceil(max(orig_image.shape[1], orig_image.shape[0])/32)*32
+        model_image = self._model_process(self.model, orig=filtered_image, sz=render_sz, gpu=self.gpu)
+        return self._post_process(model_image, filtered_image)
+
+    def _post_process(self, result:ndarray, orig:ndarray):
+        return self._unsquare(result, orig)
+
+    def _unsquare(self, result:ndarray, orig:ndarray):
+        sz = (orig.shape[1]*self.scale, orig.shape[0]*self.scale)
+        return cv2.resize(result, sz, interpolation=cv2.INTER_AREA)  

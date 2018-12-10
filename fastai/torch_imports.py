@@ -25,14 +25,14 @@ warnings.filterwarnings('ignore', message='Implicit dimension choice', category=
 
 def children(m): return m if isinstance(m, (list, tuple)) else list(m.children())
 def save_model(m, p): torch.save(m.state_dict(), p)
-def load_model(m, p):
+def load_model(m, p, strict=True):
     sd = torch.load(p, map_location=lambda storage, loc: storage)
     names = set(m.state_dict().keys())
     for n in list(sd.keys()): # list "detatches" the iterator
         if n not in names and n+'_raw' in names:
             if n+'_raw' not in sd: sd[n+'_raw'] = sd[n]
             del sd[n]
-    m.load_state_dict(sd)
+    m.load_state_dict(sd, strict=strict)
 
 def load_pre(pre, f, fn):
     m = f()

@@ -3,7 +3,7 @@ from fastai.torch_imports import *
 from fastai.dataset import Transform
 from fastai.layer_optimizer import LayerOptimizer
 from fastai.sgdr import CircularLR_beta
-from .modules import ConvBlock
+from .modules import ConvBlock, DenseBlock
 from .generators import GeneratorModule
 from .dataset import ImageGenDataLoader
 from collections import Iterable
@@ -69,7 +69,49 @@ class DCCritic(CriticModule):
     def forward(self, input):
         x=self.initial(input)
         x=self.mid(x)
-        return self.out(x), x
+        return self.out(x)
+
+class DCCriticDense(CriticModule):
+    def _generate_reduce_layers(self, nf:int, self_attention:bool=False, bn:bool=False):
+        layers=[]
+        layers.append(nn.Dropout2d(0.125))
+        layers.append(ConvBlock(nf, nf*2, 4, 2, bn=bn, sn=True, leakyReLu=True, self_attention=self_attention))
+        return layers
+
+    def __init__(self, ni:int=3, nf:int=128):
+        super().__init__()
+        scale:int=16
+        sn=True
+        bn=False
+        self_attention=True
+        assert (math.log(scale,2)).is_integer()
+        self.initial = nn.Sequential(
+            ConvBlock(ni, nf, 4, 2, bn=bn, sn=sn, leakyReLu=True),
+            nn.Dropout2d(0.05),
+            DenseBlock(nf, 3, bn=bn, sn=sn, leakyReLu=True)
+        )
+
+        cndf = nf*2
+        mid_layers=[]  
+
+        for i in range(int(math.log(scale,2)-1)):
+            use_attention = (i == 0 and self_attention) 
+            layers = self._generate_reduce_layers(nf=cndf,self_attention=use_attention, bn=bn)
+            mid_layers.extend(layers)
+            cndf = int(cndf*2)
+   
+        self.mid = nn.Sequential(*mid_layers)
+        out_layers=[]
+        out_layers.append(ConvBlock(cndf, 1, ks=4, stride=1, bias=False, bn=False, sn=sn, pad=0, actn=False))
+        self.out = nn.Sequential(*out_layers) 
+
+    def get_layer_groups(self)->[]:
+        return children(self)
+    
+    def forward(self, input):
+        x=self.initial(input)
+        x=self.mid(x)
+        return self.out(x)
 
 
 class GenResult():
@@ -136,7 +178,7 @@ class GANTrainSchedule():
         return self.data_loader.get_model_data()
 
 class GANTrainer():
-    def __init__(self, netD: nn.Module, netG: GeneratorModule, save_iters:int=1000, genloss_fns:[]=[]):
+    def __init__(self, netD: nn.Module, netG: GeneratorModule, save_iters:int=1000, genloss_fns:[]=[], max_critic_loops:int=1):
         self.netD = netD
         self.netG = netG
         self._train_loop_hooks = OrderedDict()
@@ -144,6 +186,7 @@ class GANTrainer():
         self.genloss_fns = genloss_fns
         self.save_iters=save_iters
         self.iters = 0
+        self.max_critic_loops = max_critic_loops 
 
     def register_train_loop_hook(self, hook):
         handle = hooks.RemovableHandle(self._train_loop_hooks)
@@ -240,23 +283,32 @@ class GANTrainer():
         real_image = V(y) 
         return (orig_image, real_image)
 
+    def _trained_critic_enough(self, cresult:CriticResult, count:int):
+        return cresult.dfake < 0.95 or count >= self.max_critic_loops
 
     def _train_critic(self, data_iter:Iterable, pbar:tqdm)->CriticResult:
         self._get_inner_module(self.netD).set_trainable(True)
         self._get_inner_module(self.netG).set_trainable(False)
-        orig_image, real_image = self._get_next_training_images(data_iter)
-        if orig_image is None:
-            return None
 
-        cresult = self._train_critic_once(orig_image, real_image)
-        pbar.update()
+        train = True
+        count = 0
+
+        while(train):
+            orig_image, real_image = self._get_next_training_images(data_iter)
+            if orig_image is None:
+                return None
+            cresult = self._train_critic_once(orig_image, real_image)
+            pbar.update()
+            count = count+1
+            train = not self._trained_critic_enough(cresult, count)
+
         return cresult
 
     def _train_critic_once(self, orig_image:torch.Tensor, real_image:torch.Tensor)->CriticResult:                     
         fake_image = self.netG(orig_image)
-        dfake_raw,_ = self.netD(fake_image)
+        dfake_raw = self.netD(fake_image)
         dfake = torch.nn.ReLU()(1.0+dfake_raw).mean()
-        dreal_raw,_ = self.netD(real_image)
+        dreal_raw = self.netD(real_image)
         dreal = torch.nn.ReLU()(1.0-dreal_raw).mean()
         self.netD.zero_grad()     
         hingeloss = dfake + dreal
@@ -266,13 +318,24 @@ class GANTrainer():
         self.gen_sched.on_batch_end(to_np(-dfake))
         return CriticResult(to_np(hingeloss), to_np(dreal), to_np(dfake), to_np(hingeloss))
 
-    def _train_generator(self, data_iter:Iterable, pbar:tqdm, cresult:CriticResult)->GenResult:
-        orig_image, real_image = self._get_next_training_images(data_iter)   
-        if orig_image is None:
-            return None
+    def _trained_generator_enough(self, gresult:GenResult, count:int):
+        return True
+        #return gresult.gcost < 0.2 or count >= self.max_critic_loops
 
-        gresult = self._train_generator_once(orig_image, real_image, cresult)  
-        pbar.update() 
+    def _train_generator(self, data_iter:Iterable, pbar:tqdm, cresult:CriticResult)->GenResult:
+
+        train = True
+        count=0
+
+        while(train):
+            orig_image, real_image = self._get_next_training_images(data_iter)   
+            if orig_image is None:
+                return None
+
+            gresult = self._train_generator_once(orig_image, real_image, cresult)  
+            pbar.update() 
+            count=count+1
+            train = not self._trained_generator_enough(gresult, count)
         return gresult
 
     def _train_generator_once(self, orig_image:torch.Tensor, real_image:torch.Tensor, 
@@ -297,7 +360,7 @@ class GANTrainer():
             save_model(self.netG, self.gpath)
 
     def _get_dscore(self, new_image:torch.Tensor):
-        scores, _ = self.netD(new_image)
+        scores = self.netD(new_image)
         return scores.mean()
     
 

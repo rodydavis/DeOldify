@@ -1,6 +1,14 @@
 from fastai.torch_imports import *
-from fastai.conv_learner import *
+#from fastai.conv_learner import *
 from torch.nn.utils.spectral_norm import spectral_norm
+
+
+def batchnorm_2d(nf:int):
+    bn = nn.BatchNorm2d(nf)
+    with torch.no_grad():
+        bn.bias.fill_(1e-3)
+        bn.weight.fill_(1.)
+    return bn
 
 class ConvBlock(nn.Module):
     def __init__(self, ni:int, no:int, ks:int=3, stride:int=1, pad:int=None, actn:bool=True, 
@@ -16,7 +24,7 @@ class ConvBlock(nn.Module):
         if actn:
             layers.append(nn.LeakyReLU(0.2, inplace=inplace_relu)) if leakyReLu else layers.append(nn.ReLU(inplace=inplace_relu)) 
         if bn:
-            layers.append(nn.BatchNorm2d(no))
+            layers.append(batchnorm_2d(no))
         if self_attention:
             layers.append(SelfAttention(no, 1))
 
@@ -56,7 +64,7 @@ class UpSampleBlock(nn.Module):
             layers += [UpSampleBlock._conv(ni, nf*4,ks=ks, bn=bn, sn=sn, leakyReLu=leakyReLu), 
                 nn.PixelShuffle(2)]
             if bn:
-                layers += [nn.BatchNorm2d(nf)]
+                layers += [batchnorm_2d(nf)]
 
             ni = nf
                        
@@ -71,6 +79,23 @@ class UpSampleBlock(nn.Module):
     def forward(self, x):
         return self.sequence(x)
 
+class ResBlock(nn.Module):
+    def __init__(self, nf:int, ks:int=3, res_scale:float=1.0, dropout:float=0.5, bn:bool=True, sn:bool=False, leakyReLu:bool=False):
+        super().__init__()
+        layers = []
+        nf_bottleneck = nf//2
+        self.res_scale = res_scale
+        layers.append(ConvBlock(nf, nf_bottleneck, ks=ks, bn=bn, sn=sn, leakyReLu=leakyReLu))
+        layers.append(nn.Dropout2d(dropout))
+        layers.append(ConvBlock(nf_bottleneck, nf, ks=ks, actn=False, bn=False, sn=sn))
+        self.mid = nn.Sequential(*layers)
+        self.relu = nn.LeakyReLU(0.2) if leakyReLu else nn.ReLU()
+    
+    def forward(self, x):
+        x = self.mid(x)*self.res_scale+x
+        x = self.relu(x)
+        return x
+
 
 class UnetBlock(nn.Module):
     def __init__(self, up_in:int , x_in:int , n_out:int, bn:bool=True, sn:bool=False, leakyReLu:bool=False, 
@@ -82,7 +107,7 @@ class UnetBlock(nn.Module):
         self.relu = nn.LeakyReLU(0.2, inplace=inplace_relu) if leakyReLu else nn.ReLU(inplace=inplace_relu)
         out_layers = []
         if bn: 
-            out_layers.append(nn.BatchNorm2d(n_out))
+            out_layers.append(batchnorm_2d(n_out))
         if self_attention:
             out_layers.append(SelfAttention(n_out))
         self.out = nn.Sequential(*out_layers)
@@ -131,3 +156,15 @@ class SelfAttention(nn.Module):
         attn = attn.view(*shape)
         out = self.gamma * attn + input
         return out
+
+
+class DenseBlock(nn.Module):
+    def __init__(self, nf:int, ks:int=3, bn:bool=True, sn:bool=False, leakyReLu:bool=False):
+        super().__init__()
+        layers=[]
+        layers.append(ConvBlock(nf, nf,  ks=ks, bn=bn, actn=True, leakyReLu=leakyReLu, sn=sn))
+        layers.append(ConvBlock(nf, nf,  ks=ks, bn=bn, actn=True, leakyReLu=leakyReLu, sn=sn))
+        self.mid=nn.Sequential(*layers)
+
+    def forward(self, x):
+        return torch.cat([self.mid(x),x], dim=1)

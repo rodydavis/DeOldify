@@ -1,7 +1,7 @@
 from fastai.core import *
 from fastai.conv_learner import model_meta, cut_model
 from fastai.transforms import scale_min
-from .modules import ConvBlock, UnetBlock, UpSampleBlock, SaveFeatures
+from .modules import ConvBlock, UnetBlock, UpSampleBlock, SaveFeatures, ResBlock
 from abc import ABC, abstractmethod
 from torchvision import transforms
 from torch.nn.utils.spectral_norm import spectral_norm
@@ -42,7 +42,10 @@ class AbstractUnet(GeneratorModule):
         self.up3 = ups[2]
         self.up4 = ups[3]
         self.up5 = ups[4]
-        self.out= nn.Sequential(ConvBlock(32*nf_factor, 3, ks=3, actn=False, bn=False, sn=True), nn.Tanh())
+        self.out= nn.Sequential(ConvBlock(32*nf_factor, 3, ks=3, actn=False, bn=False, sn=True))
+
+    def _pre_out(self, x:torch.Tensor, orig:torch.Tensor):
+        return x
 
     @abstractmethod
     def _get_pretrained_resnet_base(self, layers_cut:int=0):
@@ -92,7 +95,7 @@ class AbstractUnet(GeneratorModule):
         x = self.rn[7](x)
         return (x, enc0, enc1, enc2, enc3)
 
-    def _decode(self, x:torch.Tensor, enc0:torch.Tensor, enc1:torch.Tensor, enc2:torch.Tensor, enc3:torch.Tensor):
+    def _decode(self, x:torch.Tensor, enc0:torch.Tensor, enc1:torch.Tensor, enc2:torch.Tensor, enc3:torch.Tensor, orig:torch.Tensor):
         padh = 0
         padw = 0
         x = self.relu(x)
@@ -109,13 +112,15 @@ class AbstractUnet(GeneratorModule):
         #exactly should be removed.  This is consistently more 
         #than enough though.
         x = self.up5(x)
+        x = self._pre_out(x, orig)
         x = self.out(x)
         x = self._remove_padding(x, padh, padw)
         return x
 
     def forward(self, x:torch.Tensor):
+        orig = x
         x, enc0, enc1, enc2, enc3 = self._encode(x)
-        x = self._decode(x, enc0, enc1, enc2, enc3)
+        x = self._decode(x, enc0, enc1, enc2, enc3, orig)
         return x
     
     def get_layer_groups(self, precompute:bool=False)->[]:
@@ -151,6 +156,43 @@ class Unet34(AbstractUnet):
         layers.append(UpSampleBlock(256*nf_factor, 32*nf_factor, 2*scale, sn=sn, leakyReLu=leakyReLu, bn=bn))
         return layers 
 
+class Unet34_V2(AbstractUnet): 
+    def __init__(self, nf_factor:int=1, scale:int=1):
+        super().__init__(nf_factor=nf_factor, scale=scale)
+        preout_layers=[]
+        sn=True
+        preout_layers.append(ResBlock(64*nf_factor+3, sn=sn))
+        preout_layers.append(ConvBlock(64*nf_factor+3, 32*nf_factor, ks=3, bn=True, sn=sn))
+        preout_layers.append(nn.Dropout2d(0.5))
+        if(scale >= 2):
+            preout_layers.append(UpSampleBlock(32*nf_factor, 32*nf_factor, scale, sn=sn, leakyReLu=False, bn=True))
+        self.preout=nn.Sequential(*preout_layers)
+
+    def _get_pretrained_resnet_base(self, layers_cut:int=0):
+        f = resnet34
+        cut,lr_cut = model_meta[f]
+        cut-=layers_cut
+        layers = cut_model(f(True), cut)
+        return nn.Sequential(*layers), lr_cut
+
+    def _pre_out(self, x:torch.Tensor, orig:torch.Tensor):
+        x = torch.cat([x,orig], dim=1)
+        return self.preout(x)
+
+    def _get_decoding_layers(self, nf_factor:int, scale:int):
+        self_attention=True
+        bn=True
+        sn=True
+        leakyReLu=False
+        layers = []
+        layers.append(UnetBlock(512,256,256*nf_factor, sn=sn, leakyReLu=leakyReLu, bn=bn))
+        layers.append(UnetBlock(256*nf_factor,128,256*nf_factor, sn=sn, leakyReLu=leakyReLu, bn=bn))
+        layers.append(UnetBlock(256*nf_factor,64,256*nf_factor, sn=sn, self_attention=self_attention, leakyReLu=leakyReLu, bn=bn))
+        layers.append(UnetBlock(256*nf_factor,64,256*nf_factor, sn=sn, leakyReLu=leakyReLu, bn=bn))
+        layers.append(UpSampleBlock(256*nf_factor, 64*nf_factor, 2, sn=sn, leakyReLu=leakyReLu, bn=bn))
+        return layers
+
+ 
 
 class Unet101(AbstractUnet): 
     def __init__(self, nf_factor:int=1, scale:int=1):
@@ -175,6 +217,48 @@ class Unet101(AbstractUnet):
         layers.append(UnetBlock(512*nf_factor,64,256*nf_factor, sn=sn, leakyReLu=leakyReLu, bn=bn))
         layers.append(UpSampleBlock(256*nf_factor, 32*nf_factor, 2*scale, sn=sn, leakyReLu=leakyReLu, bn=bn))
         return layers 
+
+
+
+class Unet101_V2(AbstractUnet): 
+    def __init__(self, nf_factor:int=1, scale:int=1):
+        super().__init__(nf_factor=nf_factor, scale=scale)
+        preout_layers=[]
+        sn=True
+        leakyReLu=False
+        preout_layers.append(ResBlock(64*nf_factor+3, sn=sn, leakyReLu=leakyReLu))
+        preout_layers.append(ConvBlock(64*nf_factor+3, 32*nf_factor, ks=3, bn=True, sn=sn, leakyReLu=leakyReLu))
+        preout_layers.append(nn.Dropout2d(0.5))
+        if(scale >= 2):
+            preout_layers.append(UpSampleBlock(32*nf_factor, 32*nf_factor, scale, sn=sn, leakyReLu=leakyReLu, bn=True))
+        self.preout=nn.Sequential(*preout_layers)
+        self.out=nn.Sequential(ConvBlock(32*nf_factor, 3, ks=1, actn=False, bn=True, sn=True), nn.Tanh())
+
+    def _get_pretrained_resnet_base(self, layers_cut:int=0):
+        f = resnet101
+        cut,lr_cut = model_meta[f]
+        cut-=layers_cut
+        layers = cut_model(f(True), cut)
+        return nn.Sequential(*layers), lr_cut
+
+    def _pre_out(self, x:torch.Tensor, orig:torch.Tensor):
+        x = torch.cat([x,orig], dim=1)
+        return self.preout(x)
+
+    def _get_decoding_layers(self, nf_factor:int, scale:int):
+        self_attention=True
+        bn=True
+        sn=True
+        leakyReLu=False
+        layers = []
+        layers.append(UnetBlock(2048,1024,512*nf_factor, sn=sn, leakyReLu=leakyReLu, bn=bn))
+        layers.append(UnetBlock(512*nf_factor,512,512*nf_factor, sn=sn, leakyReLu=leakyReLu, bn=bn))
+        layers.append(UnetBlock(512*nf_factor,256,512*nf_factor, sn=sn, self_attention=self_attention, leakyReLu=leakyReLu, bn=bn))
+        layers.append(UnetBlock(512*nf_factor,64,256*nf_factor, sn=sn, leakyReLu=leakyReLu, bn=bn))
+        layers.append(UpSampleBlock(256*nf_factor, 64*nf_factor, 2, sn=sn, leakyReLu=leakyReLu, bn=bn))
+        return layers 
+
+
 
 class Unet152(AbstractUnet): 
     def __init__(self, nf_factor:int=1, scale:int=1):

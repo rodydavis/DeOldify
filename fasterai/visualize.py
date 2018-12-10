@@ -163,7 +163,6 @@ class ImageGenVisualizer():
         tbwriter.add_image(prefix + ' gen images', vutils.make_grid(gen_images, normalize=True), iter_count)
         tbwriter.add_image(prefix + ' real images', vutils.make_grid(real_images, normalize=True), iter_count)
 
-
 class GANTrainerStatsVisualizer():
     def __init__(self):
         return

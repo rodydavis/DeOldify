@@ -81,7 +81,7 @@ class GANVisualizationHook():
 
 class ModelVisualizationCallback(Callback):
     def __init__(self, base_dir:Path, model:GeneratorModule, md:ModelData, name:str, stats_iters:int=25, 
-            visual_iters:int=200, weight_iters:int=25, jupyter:bool=False):
+            visual_iters:int=200, weight_iters:int=25):
         super().__init__()
         self.base_dir = base_dir
         self.name = name
@@ -94,7 +94,6 @@ class ModelVisualizationCallback(Callback):
         self.iter_count = 0
         self.model = model
         self.md = md
-        self.jupyter = jupyter
         self.learner_vis = LearnerStatsVisualizer()
         self.graph_vis = ModelGraphVisualizer()
         self.weight_vis = ModelHistogramVisualizer()
@@ -138,7 +137,7 @@ class ModelVisualizationCallback(Callback):
 
     def output_visuals(self):
         self.img_gen_vis.output_image_gen_visuals(md=self.md, model=self.model, iter_count=self.iter_count, 
-                tbwriter=self.tbwriter, jupyter=self.jupyter)
+                tbwriter=self.tbwriter)
 
     def output_weights(self):
         self.weight_vis.write_tensorboard_histograms(model=self.model, iter_count=self.iter_count, tbwriter=self.tbwriter)   
@@ -147,11 +146,10 @@ class ModelVisualizationCallback(Callback):
         self.tbwriter.close()
 
 class ImageGenVisualizationCallback(ModelVisualizationCallback):
-    def __init__(self, base_dir: Path, model: GeneratorModule,  md: ImageData, name: str, stats_iters: int=25, visual_iters: int=200, jupyter:bool=False):
-        super().__init__(base_dir=base_dir, model=model,  md=md, name=name, stats_iters=stats_iters, visual_iters=visual_iters, jupyter=jupyter)
+    def __init__(self, base_dir: Path, model: GeneratorModule,  md: ImageData, name: str, stats_iters: int=25, visual_iters: int=200):
+        super().__init__(base_dir=base_dir, model=model,  md=md, name=name, stats_iters=stats_iters, visual_iters=visual_iters)
         self.img_gen_vis = ImageGenVisualizer()
 
     def output_visuals(self):
         super().output_visuals()
-        self.img_gen_vis.output_image_gen_visuals(md=self.md, model=self.model, iter_count=self.iter_count, 
-                tbwriter=self.tbwriter, jupyter=self.jupyter)
+        self.img_gen_vis.output_image_gen_visuals(md=self.md, model=self.model, iter_count=self.iter_count, tbwriter=self.tbwriter)

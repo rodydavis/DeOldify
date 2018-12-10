@@ -483,3 +483,8 @@ superres_crit_pretrain.h5
 superres_gen_pretrain.h5
 test_images/Andy.jpg
 *.prof
+.ipynb_checkpoints/ColorizerGenPreTrain-checkpoint.ipynb
+.ipynb_checkpoints/SuperResCriticPretrain-checkpoint.ipynb
+.ipynb_checkpoints/SuperResolutionGenPreTrain-checkpoint.ipynb
+.ipynb_checkpoints/SuperResolutionTrainingGAN-checkpoint.ipynb
+.ipynb_checkpoints/SuperResolutionTrainingGAN2-checkpoint.ipynb
